@@ -5,6 +5,7 @@ import os
 import numpy as np
 import openai
 import pandas as pd
+import requests
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -172,17 +173,28 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    response = openai.Image.create(prompt=update.message.text, n=1, size="1024x1024")
+    image_url = response["data"][0]["url"]
+    image_response = requests.get(image_url)
+    await context.bot.send_photo(
+        chat_id=update.effective_chat.id, photo=image_response.content
+    )
+
+
 if __name__ == "__main__":
     application = ApplicationBuilder().token(tg_bot_token).build()
 
     start_handler = CommandHandler("start", start)
     chat_handler = CommandHandler("chat", chat)
     mozilla_handler = CommandHandler("mozilla", mozilla)
+    image_handler = CommandHandler("image", image)
     # code_generation_handler = CommandHandler("code", code_generation)
 
     application.add_handler(start_handler)
     application.add_handler(chat_handler)
     application.add_handler(mozilla_handler)
+    application.add_handler(image_handler)
     # application.add_handler(code_generation_handler)
 
     application.run_polling()
