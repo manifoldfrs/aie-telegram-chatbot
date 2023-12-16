@@ -1,8 +1,6 @@
+import json
 import logging
 import os
-import sys
-
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np
 import openai
@@ -11,7 +9,59 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+from functions import functions, run_function
 from questions import answer_question
+
+CODE_PROMPT = """
+Here are two input:output examples for code generation. Please use these and follow the styling for future requests that you think are pertinent to the request. Make sure All HTML is generated with the JSX flavoring.
+
+// SAMPLE 1
+// A Blue Box with 3 yellow cirles inside of it that have a red outline
+<div style={{
+  backgroundColor: 'blue',
+  padding: '20px',
+  display: 'flex',
+  justifyContent: 'space-around',
+  alignItems: 'center',
+  width: '300px',
+  height: '100px',
+}}>
+  <div style={{
+    backgroundColor: 'yellow',
+    borderRadius: '50%',
+    width: '50px',
+    height: '50px',
+    border: '2px solid red'
+  }}></div>
+  <div style={{
+    backgroundColor: 'yellow',
+    borderRadius: '50%',
+    width: '50px',
+    height: '50px',
+    border: '2px solid red'
+  }}></div>
+  <div style={{
+    backgroundColor: 'yellow',
+    borderRadius: '50%',
+    width: '50px',
+    height: '50px',
+    border: '2px solid red'
+  }}></div>
+</div>
+
+// SAMPLE 2
+// A RED BUTTON THAT SAYS 'CLICK ME'
+<button style={{
+  backgroundColor: 'red',
+  color: 'white',
+  padding: '10px 20px',
+  border: 'none',
+  borderRadius: '50px',
+  cursor: 'pointer'
+}}>
+  Click Me
+</button>
+"""
 
 load_dotenv()
 
@@ -19,10 +69,13 @@ openai.api_key = os.environ["OPENAI_API_KEY"]
 tg_bot_token = os.environ["TG_BOT_TOKEN"]
 
 messages = [
-    {"role": "system", "content": "You are a helpful assistant that answers questions."}
+    {
+        "role": "system",
+        "content": "You are a helpful assistant that answers questions.",
+    },
+    {"role": "system", "content": CODE_PROMPT},
 ]
 
-test_message = "What is the capital of France?" * 5000
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -39,20 +92,84 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    messages.append({"role": "user", "content": test_message})
-    completion = openai.ChatCompletion.create(model="gpt-4-0314", messages=messages)
-    completion_answer = completion.choices[0]["message"]["content"]
-    messages.append({"role": "assistant", "content": completion_answer})
+# async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#     messages.append({"role": "user", "content": update.message.text})
+#     completion = openai.ChatCompletion.create(model="gpt-4-0314", messages=messages)
+#     completion_answer = completion.choices[0]["message"]["content"]
+#     messages.append({"role": "assistant", "content": completion_answer})
 
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id, text=completion_answer
-    )
+#     await context.bot.send_message(
+#         chat_id=update.effective_chat.id, text=completion_answer
+#     )
 
 
 async def mozilla(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = answer_question(df, question=update.message.text, debug=True)
     await context.bot.send_message(chat_id=update.effective_chat.id, text=answer)
+
+
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Append the user's message to the messages list"""
+    messages.append({"role": "user", "content": update.message.text})
+    """Generate an initial response, providing functions to enable function calling"""
+    initial_response = openai.ChatCompletion.create(
+        model="gpt-4", messages=messages, functions=functions
+    )
+    initial_response_message = initial_response.get("choices", [{}])[0].get("message")
+    final_response = None
+    """Check if the initial response contains a function call"""
+    if initial_response_message and initial_response_message.get("function_call"):
+        # Extract the function name and arguments
+        name = initial_response_message["function_call"]["name"]
+        args = json.loads(initial_response_message["function_call"]["arguments"])
+
+        # Run the corresponding function
+        function_response = run_function(name, args)
+
+        # if 'svg_to_png_bytes' function, send a photo and return as there's nothing else to do
+        if name == "svg_to_png_bytes":
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id, photo=function_response
+            )
+            return
+
+        # Generate the final response
+        final_response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                *messages,
+                initial_response_message,
+                {
+                    "role": "function",
+                    "name": initial_response_message["function_call"]["name"],
+                    "content": json.dumps(function_response),
+                },
+            ],
+        )
+        final_answer = final_response["choices"][0]["message"]["content"]
+
+        # Send the final response if it exists
+        if final_answer:
+            messages.append({"role": "assistant", "content": final_answer})
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text=final_answer
+            )
+        else:
+            # Send an error message if something went wrong
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Something went wrong, please try again",
+            )
+    else:
+        # If no function call, send the initial response
+        messages.append(initial_response_message)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text=initial_response_message["content"]
+        )
+
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id, text="What else can I help you with?"
+    )
 
 
 if __name__ == "__main__":
@@ -61,9 +178,11 @@ if __name__ == "__main__":
     start_handler = CommandHandler("start", start)
     chat_handler = CommandHandler("chat", chat)
     mozilla_handler = CommandHandler("mozilla", mozilla)
+    # code_generation_handler = CommandHandler("code", code_generation)
 
     application.add_handler(start_handler)
     application.add_handler(chat_handler)
     application.add_handler(mozilla_handler)
+    # application.add_handler(code_generation_handler)
 
     application.run_polling()

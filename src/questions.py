@@ -1,10 +1,13 @@
 # questions.py
-import numpy as np
-import pandas as pd
-import openai
 import os
+
+import numpy as np
+import openai
+import pandas as pd
+from dotenv import load_dotenv
 from openai.embeddings_utils import distances_from_embeddings
 
+load_dotenv()
 openai.api_key = os.environ["OPENAI_API_KEY"]
 
 df = pd.read_csv("processed/embeddings.csv", index_col=0)
